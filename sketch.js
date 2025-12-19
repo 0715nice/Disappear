@@ -1,3 +1,25 @@
+/************ 状态机 ************/
+const STATE = { READY: 0, PLAY: 1, PAUSE: 2, WIN: 3, LOSE: 4 };
+let gameState = STATE.READY;
+
+/************ 模式 ************/
+let isEasy = true;          // true=初级 false=进阶
+let timeLimit = 60;         // 进阶限时
+let timer = timeLimit;      // 剩余秒数
+let spaceLeft = 3;          // 空格刷新次数
+
+/************ 炸弹 ************/
+let bombs = [];             // [{r,c}]  炸弹坐标池
+const BOMB_RADIUS = 1;      // 炸周围 1 格（九宫格）
+
+/************ 计分 ************/
+let combo = 0;              // 连击
+
+//回弹动画
+let animBack = null;          // 回弹动画 {sr,sc,tr,tc,p} 与 animSwap 结构相同
+const BACK_FRAMES = 10;       // 回弹帧数
+
+/************ 资源 ************/
 let img = []; // 存放 6 张 emoji
 function preload() {
   for (let i = 0; i < TYPE; i++) {
@@ -7,6 +29,7 @@ function preload() {
     );
   }
 }
+/************ 动画参数 ************/
 
 let animSwap = null; // {r,c,targetR,targetC,progress}
 const SWAP_FRAMES = 10; // 0→1 共 10 帧
@@ -22,7 +45,7 @@ let selected = null;  // {r,c}
 let animQueue = [];   // 简单的动画对象池（帧计数器）
 /************ 生命周期 ************/
 function setup() {
-  createCanvas(COL * S + 40, ROW * S + 120);
+  createCanvas(COL * S + 40, ROW * S + 180);
   colorMode(HSB, TYPE * 10, 100, 100); // 用 HSB 快速配 6 种区分色
   textAlign(LEFT, CENTER);
   noStroke();
@@ -30,6 +53,20 @@ function setup() {
 }
 function draw() {
   background(0, 0, 95);
+  switch (gameState) {
+    case STATE.READY: drawReady(); break;
+    case STATE.PLAY:
+    case STATE.PAUSE:
+      background(0, 0, 95);
+      drawUI();
+      drawGrid();
+      handleAnim();
+      if (gameState === STATE.PAUSE) drawPauseOverlay();
+      break;
+    case STATE.WIN:  drawEnd('YOU WIN !'); break;
+    case STATE.LOSE: drawEnd('GAME OVER'); break;
+  }
+
   drawUI();
   drawGrid();
   handleAnim(); // 下落/消除动画
@@ -52,14 +89,19 @@ function draw() {
   if (animSwap.p >= SWAP_FRAMES) {
     // 真正交换数据
     swap(sr, sc, tr, tc);
-    animSwap = null;
-    // 检测匹配
     let m = findAllMatches();
+    
     if (m.length) {
       score += m.length * 100;
+      combo++;
       eliminate(m);
       animQueue.push({ type: 'drop' });
+    }else {
+      // 无消除，回弹
+      swap(sr, sc, tr, tc); // 先交换回去
+      animBack = { sr, sc, tr, tc, p: 0 };
     }
+    animSwap = null;
   }
 }
 }
@@ -123,33 +165,123 @@ for (let i = animPop.length - 1; i >= 0; i--) {
   if (a.alpha < 5) animPop.splice(i, 1);
 }
 }
+
 function drawUI() {
   fill(0);
   textSize(24);
   text('Score: ' + score, 20, 30);
+  text('Combo: ' + combo, 200, 30);
+  if (!isEasy) {
+    text('Time: ' + ceil(timer), 20, 60);
+    // 进度条
+    let w = map(timer, 0, timeLimit, 0, width - 40);
+    fill(0, 80, 80);
+    rect(20, 70, w, 8, 5);
+  }
 }
+
+// 每秒减 1
+setInterval(() => {
+  if (gameState === STATE.PLAY && !isEasy) {
+    timer -= 1;
+    if (timer <= 0) gameState = STATE.LOSE;
+  }
+}, 1000);
 /************ 3. 输入层 ************/
+// function mousePressed() {
+//   // 如果正在动画直接返回
+//   if (animSwap || animQueue.length) return;
+//   let c = floor((mouseX - 20) / S);
+//   let r = floor((mouseY - 80) / S);
+//   if (outBound(r, c)) return;
+//   if (!selected) {
+//     selected = { r, c, drag: true, x: mouseX, y: mouseY }; // 记录拖动
+//   } else {
+//     let sr = selected.r, sc = selected.c;
+//     if (abs(sr - r) + abs(sc - c) === 1) {
+//       // 开始交换动画
+//       animSwap = { sr, sc, tr: r, tc: c, p: 0 };
+//       selected = null;
+//     } else {
+//       selected = null; // 取消
+//     }
+//   }
+// }
+function drawReady() {
+  fill(0);
+  textSize(32);
+  text('CUTE  MATCH', 20, 40);
+  textSize(18);
+  text('Choose mode to start', 20, 80);
+
+  // 初级按钮
+  fill(isEasy ? color(120, 60, 90) : color(0, 0, 80));
+  rect(40, 120, 120, 40, 10);
+  fill(255);
+  text('Easy', 80, 142);
+
+  // 进阶按钮
+  fill(!isEasy ? color(0, 80, 90) : color(0, 0, 80));
+  rect(180, 120, 120, 40, 10);
+  fill(255);
+  text('Hard', 220, 142);
+
+  // 提示
+  fill(0);
+  text('R-restart  ESC-pause  Space-shuffle(3)', 20, height - 40);
+}
+
 function mousePressed() {
-  // 如果正在动画直接返回
-  if (animSwap || animQueue.length) return;
+  // 在 READY 界面点按钮
+  if (gameState === STATE.READY) {
+    if (mouseX > 40 && mouseX < 160 && mouseY > 120 && mouseY < 160) {
+      isEasy = true;
+      startGame();
+    }
+    if (mouseX > 180 && mouseX < 300 && mouseY > 120 && mouseY < 160) {
+      isEasy = false;
+      startGame();
+    }
+    return;
+  }
+  // 其余逻辑保持昨天的
+  if (animSwap || animQueue.length || gameState !== STATE.PLAY) return;
   let c = floor((mouseX - 20) / S);
   let r = floor((mouseY - 80) / S);
   if (outBound(r, c)) return;
   if (!selected) {
-    selected = { r, c, drag: true, x: mouseX, y: mouseY }; // 记录拖动
+    selected = { r, c };
   } else {
     let sr = selected.r, sc = selected.c;
     if (abs(sr - r) + abs(sc - c) === 1) {
-      // 开始交换动画
       animSwap = { sr, sc, tr: r, tc: c, p: 0 };
       selected = null;
     } else {
-      selected = null; // 取消
+      selected = null;
     }
   }
 }
 function outBound(r, c) {
   return r < 0 || r >= ROW || c < 0 || c >= COL;
+}
+
+function keyPressed() {
+  if (keyCode === ESCAPE) {
+    gameState = gameState === STATE.PLAY ? STATE.PAUSE : STATE.PLAY;
+  }
+  if (key === 'r' || key === 'R') {
+    resetGame();
+  }
+  if (key === ' ') {
+    if (spaceLeft > 0 && gameState === STATE.PLAY) {
+      spaceLeft--;
+      initGrid();          // 直接换新局
+      bombs = [];          // 炸弹清空
+      animQueue = [];
+      animPop = [];
+      animSwap = null;
+    }
+  }
 }
 
 /************ 4. 逻辑层 ************/
@@ -160,6 +292,7 @@ function swap(r1, c1, r2, c2) {
 }
 function findAllMatches() {
   let res = [];
+  let mark4 = [], mark5 = []; // 额外记录 4、5
   // 横向
   for (let r = 0; r < ROW; r++) {
     for (let c = 0; c < COL - 2; ) {
@@ -169,11 +302,13 @@ function findAllMatches() {
       while (c + len < COL && grid[r][c + len] === t) len++;
       if (len >= 3) {
         for (let i = 0; i < len; i++) res.push({ r, c: c + i });
+        if (len === 4) mark4.push({ r, c: c + 2 });
+        if (len >= 5) mark5.push({ r, c: c + 2 });
         c += len;
       } else c++;
     }
   }
-  // 纵向
+  // 纵向（同理，略）
   for (let c = 0; c < COL; c++) {
     for (let r = 0; r < ROW - 2; ) {
       let t = grid[r][c];
@@ -182,6 +317,8 @@ function findAllMatches() {
       while (r + len < ROW && grid[r + len][c] === t) len++;
       if (len >= 3) {
         for (let i = 0; i < len; i++) res.push({ r: r + i, c });
+        if (len === 4) mark4.push({ r: r + 2, c });
+        if (len >= 5) mark5.push({ r: r + 2, c });
         r += len;
       } else r++;
     }
@@ -189,10 +326,16 @@ function findAllMatches() {
   // 去重
   let set = new Set();
   res.forEach(p => set.add(`${p.r},${p.c}`));
-  return Array.from(set).map(s => {
+  let out = Array.from(set).map(s => {
     let [r, c] = s.split(',').map(Number);
     return { r, c };
   });
+  // 炸弹规则：进阶才掉，且 4 消以上
+  if (!isEasy) {
+    mark5.forEach(p => bombs.push(p)); // 5 消必掉
+    mark4.forEach(p => bombs.push(p)); // 4 消也掉
+  }
+  return out;
 }
 function eliminate(matches) {
   matches.forEach(p => (grid[p.r][p.c] = -1));
@@ -263,9 +406,62 @@ function dropStep() {
   return moved;
 }
 function eliminate(matches) {
+  // 先普通消除
   matches.forEach(p => {
     animPop.push({ r: p.r, c: p.c, scale: 1, alpha: 255 });
     grid[p.r][p.c] = -1;
   });
-  animQueue.push({ type: 'drop' });   // ← 保证有掉落
+  // 再处理炸弹
+  bombs.forEach(b => {
+    // 炸周围 1 格
+    for (let dr = -BOMB_RADIUS; dr <= BOMB_RADIUS; dr++) {
+      for (let dc = -BOMB_RADIUS; dc <= BOMB_RADIUS; dc++) {
+        let rr = b.r + dr, cc = b.c + dc;
+        if (outBound(rr, cc)) continue;
+        animPop.push({ r: rr, c: cc, scale: 1.2, alpha: 255 });
+        grid[rr][cc] = -1;
+      }
+    }
+  });
+  bombs = []; // 用完清空
+  animQueue.push({ type: 'drop' });
+}
+
+function startGame() {
+  timer = timeLimit;
+  spaceLeft = 3;
+  score = 0;
+  combo = 0;
+  bombs = [];
+  animQueue = [];
+  animPop = [];
+  animSwap = null;
+  selected = null;
+  initGrid();
+  gameState = STATE.PLAY;
+}
+
+function resetGame() {
+  gameState = STATE.READY;
+}
+
+function drawEnd(msg) {
+  fill(0, 0, 0, 180);
+  rect(0, 0, width, height);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(36);
+  text(msg, width / 2, height / 2 - 20);
+  textSize(18);
+  text('Score: ' + score, width / 2, height / 2 + 20);
+  text('Press R to restart', width / 2, height / 2 + 50);
+}
+
+function drawPauseOverlay() {
+  fill(0, 0, 0, 120);
+  rect(0, 0, width, height);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(32);
+  text('PAUSED', width / 2, height / 2);
 }
